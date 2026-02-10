@@ -73,6 +73,9 @@ def collect_telegram_ids_once(ctx: RuntimeContext) -> int:
         member_name = row.get("member_name", "").strip()
         if username and member_name:
             username_to_member[username] = member_name
+            print(f"  Mapped: @{username} -> {member_name}")
+
+    print(f"Loaded {len(username_to_member)} username mappings from sheet.")
 
     state = ctx.sheets.get_state()
     offset_key = "telegram_updates_offset"
@@ -96,10 +99,13 @@ def collect_telegram_ids_once(ctx: RuntimeContext) -> int:
         from_user = message.get("from") or {}
         chat = message.get("chat") or {}
         username = _normalize_username(from_user.get("username"))
+        first_name = str(from_user.get("first_name", "")).strip()
         chat_id = str(chat.get("id", "")).strip()
 
         if not text.startswith("/start") or not chat_id:
             continue
+
+        print(f"Processing /start from: username=@{username}, first_name={first_name}, chat_id={chat_id}")
 
         member_name = username_to_member.get(username, "")
         if member_name:
@@ -112,10 +118,11 @@ def collect_telegram_ids_once(ctx: RuntimeContext) -> int:
             )
             processed += 1
         else:
+            print(f"  No match found. Available usernames: {list(username_to_member.keys())}")
             _send_or_print(
                 ctx,
                 chat_id,
-                "You are not mapped yet in the team sheet. Please share your @username with the admin.",
+                f"You are not mapped yet in the team sheet. Your Telegram username is @{username or '(none)'}. Please share your @username with the admin.",
             )
 
     if not ctx.config.dry_run:
