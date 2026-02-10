@@ -35,6 +35,18 @@ class BotConfig:
             return default
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
+    @staticmethod
+    def _parse_int(value: Optional[str], default: int) -> int:
+        if value is None:
+            return default
+        raw = str(value).strip()
+        if raw == "":
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            return default
+
     @classmethod
     def from_env(
         cls,
@@ -89,9 +101,11 @@ class BotConfig:
             reddit_user_agent=reddit_user_agent,
             llm_model=os.getenv("BOT_REPLY_MODEL", "gpt-4o-mini").strip(),
             timezone=os.getenv("BOT_TIMEZONE", "Africa/Addis_Ababa").strip(),
-            daily_hour=int(os.getenv("BOT_DAILY_HOUR", "8")),
-            daily_minute=int(os.getenv("BOT_DAILY_MINUTE", "0")),
-            poll_interval_minutes=int(os.getenv("BOT_POLL_INTERVAL_MINUTES", "10")),
+            daily_hour=cls._parse_int(os.getenv("BOT_DAILY_HOUR"), 8),
+            daily_minute=cls._parse_int(os.getenv("BOT_DAILY_MINUTE"), 0),
+            poll_interval_minutes=cls._parse_int(
+                os.getenv("BOT_POLL_INTERVAL_MINUTES"), 10
+            ),
             dry_run=dry_run,
             google_service_account_path=service_account_path,
             google_service_account_json=service_account_json,
