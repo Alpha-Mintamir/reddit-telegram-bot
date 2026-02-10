@@ -66,14 +66,29 @@ def _build_member_lookup(teams_rows: List[Dict[str, str]]) -> Dict[str, Dict[str
 
 
 def collect_telegram_ids_once(ctx: RuntimeContext) -> int:
+    print(f"Reading Teams tab: '{ctx.config.teams_tab_name}' from sheet ID: {ctx.config.google_spreadsheet_id}")
+    
+    # Debug: List all worksheets
+    try:
+        all_worksheets = ctx.sheets._spreadsheet.worksheets()
+        print(f"Available worksheets: {[ws.title for ws in all_worksheets]}")
+    except Exception as e:
+        print(f"Error listing worksheets: {e}")
+    
     teams_rows = ctx.sheets.read_rows(ctx.config.teams_tab_name)
+    print(f"Raw rows from sheet: {len(teams_rows)} rows")
+    if teams_rows:
+        print(f"First row keys: {list(teams_rows[0].keys())}")
+        print(f"First row sample: {teams_rows[0]}")
+    
     username_to_member: Dict[str, str] = {}
-    for row in teams_rows:
+    for idx, row in enumerate(teams_rows, start=1):
         username = _normalize_username(row.get("telegram_user_id", ""))
         member_name = row.get("member_name", "").strip()
+        print(f"  Row {idx}: member_name='{member_name}', telegram_user_id='{row.get('telegram_user_id', '')}' (normalized: '{username}')")
         if username and member_name:
             username_to_member[username] = member_name
-            print(f"  Mapped: @{username} -> {member_name}")
+            print(f"    -> Mapped: @{username} -> {member_name}")
 
     print(f"Loaded {len(username_to_member)} username mappings from sheet.")
 
