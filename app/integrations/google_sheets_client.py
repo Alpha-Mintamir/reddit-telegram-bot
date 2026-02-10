@@ -164,7 +164,14 @@ class GoogleSheetsClient:
             return False
         name_col = headers.index("member_name") + 1
         tg_col = headers.index("telegram_user_id") + 1
-        for r in range(2, ws.max_row + 1):
+        
+        # Get all values to determine row count
+        all_values = ws.get_all_values()
+        if len(all_values) <= 1:  # Only header or empty
+            return False
+        
+        # Iterate through data rows (skip header at index 0)
+        for r in range(2, len(all_values) + 1):
             name = str(ws.cell(r, name_col).value or "").strip()
             if name.lower() == member_name.strip().lower():
                 ws.update_cell(r, tg_col, telegram_user_id)
