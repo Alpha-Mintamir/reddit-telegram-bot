@@ -106,8 +106,23 @@ def collect_telegram_ids_once(ctx: RuntimeContext) -> int:
             continue
 
         print(f"Processing /start from: username=@{username}, first_name={first_name}, chat_id={chat_id}")
+        print(f"  Normalized username: '{username}' (len={len(username)})")
+        print(f"  Looking in username_to_member keys: {list(username_to_member.keys())}")
 
         member_name = username_to_member.get(username, "")
+        print(f"  Direct username lookup result: '{member_name}'")
+        
+        # Fallback: try matching by first_name if username doesn't match
+        if not member_name and first_name:
+            first_name_lower = first_name.lower()
+            print(f"  Trying first_name fallback: '{first_name}' (lower: '{first_name_lower}')")
+            for row in teams_rows:
+                sheet_name = row.get("member_name", "").strip()
+                if sheet_name.lower() == first_name_lower:
+                    member_name = sheet_name
+                    print(f"  Matched by first_name: {first_name} -> {member_name}")
+                    break
+
         if member_name:
             if not ctx.config.dry_run:
                 ctx.sheets.update_team_member_telegram_id(member_name, chat_id)
