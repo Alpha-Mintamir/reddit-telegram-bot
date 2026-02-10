@@ -1,0 +1,77 @@
+name: Telegram Reddit Bot Runner
+
+on:
+  schedule:
+    # Every 10 minutes (UTC)
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Bot mode to run"
+        required: true
+        default: "once"
+        type: choice
+        options:
+          - once
+          - collect-ids
+      dry_run:
+        description: "Run without sending or writing"
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: telegram-reddit-bot-runner
+      cancel-in-progress: false
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      GOOGLE_SHEETS_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+      REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+      REDDIT_USER_AGENT: ${{ secrets.REDDIT_USER_AGENT }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      BOT_REPLY_MODEL: ${{ secrets.BOT_REPLY_MODEL }}
+      BOT_TIMEZONE: ${{ secrets.BOT_TIMEZONE }}
+      BOT_DAILY_HOUR: ${{ secrets.BOT_DAILY_HOUR }}
+      BOT_DAILY_MINUTE: ${{ secrets.BOT_DAILY_MINUTE }}
+      BOT_POLL_INTERVAL_MINUTES: ${{ secrets.BOT_POLL_INTERVAL_MINUTES }}
+      BOT_TEAMS_TAB: ${{ secrets.BOT_TEAMS_TAB }}
+      BOT_POSTING_TAB: ${{ secrets.BOT_POSTING_TAB }}
+      BOT_REPLY_QUEUE_TAB: ${{ secrets.BOT_REPLY_QUEUE_TAB }}
+      BOT_STATE_TAB: ${{ secrets.BOT_STATE_TAB }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Determine mode and dry-run flag
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+            if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+              echo "dry_flag=--dry-run" >> $GITHUB_OUTPUT
+            else
+              echo "dry_flag=" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "mode=once" >> $GITHUB_OUTPUT
+            echo "dry_flag=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run bot
+        run: python run_bot.py --mode ${{ steps.vars.outputs.mode }} ${{ steps.vars.outputs.dry_flag }}
+
+

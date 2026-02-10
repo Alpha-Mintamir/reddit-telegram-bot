@@ -43,4 +43,40 @@ python run_bot.py --mode daemon
 
 This folder includes `render.yaml` for worker deployment.
 
+## GitHub Actions (Free Hosting Path)
+
+This repo includes workflows:
+
+- `.github/workflows/bot-runner.yml`
+  - Scheduled every 10 minutes
+  - Runs: `python run_bot.py --mode once`
+  - Supports manual run with mode `once` or `collect-ids`
+- `.github/workflows/api-checks.yml`
+  - Manual API health checks (`telegram`, `sheets`, `reddit`, `all`)
+
+### Required GitHub Secrets
+
+Set these in `Settings -> Secrets and variables -> Actions`:
+
+- `TELEGRAM_BOT_TOKEN`
+- `GOOGLE_SHEETS_SPREADSHEET_ID`
+- `GOOGLE_SERVICE_ACCOUNT_JSON`
+- `REDDIT_CLIENT_ID` (can be empty until approved if you only run `collect-ids`)
+- `REDDIT_CLIENT_SECRET` (same note as above)
+- `REDDIT_USER_AGENT` (same note as above)
+- `OPENAI_API_KEY`
+
+### Optional GitHub Secrets
+
+- `BOT_REPLY_MODEL` (default `gpt-4o-mini`)
+- `BOT_TIMEZONE` (default `Africa/Addis_Ababa`)
+- `BOT_DAILY_HOUR` (default `8`)
+- `BOT_DAILY_MINUTE` (default `0`)
+- `BOT_POLL_INTERVAL_MINUTES` (default `10`)
+- `BOT_TEAMS_TAB` (default `Teams`)
+- `BOT_POSTING_TAB` (default `PostingPlan`)
+- `BOT_REPLY_QUEUE_TAB` (default `ReplyQueue`)
+- `BOT_STATE_TAB` (default `State`)
+
+
 
