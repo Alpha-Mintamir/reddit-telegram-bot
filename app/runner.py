@@ -66,14 +66,35 @@ def _build_member_lookup(teams_rows: List[Dict[str, str]]) -> Dict[str, Dict[str
 
 
 def collect_telegram_ids_once(ctx: RuntimeContext) -> int:
-    print(f"Reading Teams tab: '{ctx.config.teams_tab_name}' from sheet ID: {ctx.config.google_spreadsheet_id}")
+    sheet_id = ctx.config.google_spreadsheet_id
+    sheet_id_masked = sheet_id[:8] + "..." + sheet_id[-8:] if len(sheet_id) > 16 else "***"
+    print(f"Reading Teams tab: '{ctx.config.teams_tab_name}' from sheet ID: {sheet_id_masked}")
+    print(f"Expected Sheet URL: https://docs.google.com/spreadsheets/d/{sheet_id}")
     
     # Debug: List all worksheets
     try:
         all_worksheets = ctx.sheets._spreadsheet.worksheets()
-        print(f"Available worksheets: {[ws.title for ws in all_worksheets]}")
+        print(f"Available worksheets ({len(all_worksheets)}): {[ws.title for ws in all_worksheets[:10]]}{'...' if len(all_worksheets) > 10 else ''}")
+        
+        # Check if Teams tab exists
+        teams_ws = None
+        for ws in all_worksheets:
+            if ws.title == ctx.config.teams_tab_name:
+                teams_ws = ws
+                break
+        
+        if teams_ws:
+            all_values = teams_ws.get_all_values()
+            print(f"Teams tab found: {len(all_values)} total rows (including header)")
+            if all_values:
+                print(f"  Header: {all_values[0]}")
+                print(f"  Data rows: {len(all_values) - 1}")
+        else:
+            print(f"⚠️  Teams tab '{ctx.config.teams_tab_name}' NOT FOUND in worksheets!")
     except Exception as e:
-        print(f"Error listing worksheets: {e}")
+        print(f"Error accessing worksheets: {e}")
+        import traceback
+        traceback.print_exc()
     
     teams_rows = ctx.sheets.read_rows(ctx.config.teams_tab_name)
     print(f"Raw rows from sheet: {len(teams_rows)} rows")
