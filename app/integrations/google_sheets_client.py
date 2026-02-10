@@ -1,0 +1,179 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Dict, Iterable, List, Optional
+
+import gspread
+
+from app.config import BotConfig
+
+
+DEFAULT_HEADERS = {
+    "Teams": ["team_id", "member_name", "telegram_user_id", "is_active"],
+    "PostingPlan": [
+        "post_id",
+        "team_id",
+        "scheduled_date",
+        "scheduled_time",
+        "poster_member_name",
+        "post_content",
+        "reddit_post_url",
+        "status",
+        "last_notified_at",
+    ],
+    "ReplyQueue": [
+        "reply_task_id",
+        "post_id",
+        "reddit_comment_id",
+        "comment_author",
+        "comment_url",
+        "assigned_member_name",
+        "reply_suggestion",
+        "status",
+        "created_at",
+        "sent_at",
+    ],
+    "State": ["state_key", "state_value", "updated_at"],
+}
+
+
+@dataclass
+class SheetsRowRef:
+    row_number: int
+    values: Dict[str, str]
+
+
+class GoogleSheetsClient:
+    def __init__(self, config: BotConfig):
+        if config.google_service_account_json:
+            gc = gspread.service_account_from_dict(config.google_service_account_json)
+        else:
+            gc = gspread.service_account(filename=config.google_service_account_path)
+        self.config = config
+        self._spreadsheet = gc.open_by_key(config.google_spreadsheet_id)
+
+    @staticmethod
+    def _now_utc_iso() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def get_or_create_worksheet(self, name: str, headers: Optional[List[str]] = None):
+        try:
+            ws = self._spreadsheet.worksheet(name)
+        except gspread.WorksheetNotFound:
+            ws = self._spreadsheet.add_worksheet(title=name, rows=200, cols=30)
+        if headers:
+            existing = ws.row_values(1)
+            if existing != headers:
+                ws.clear()
+                ws.append_row(headers)
+        return ws
+
+    def ensure_default_schema(self) -> None:
+        mapping = {
+            self.config.teams_tab_name: DEFAULT_HEADERS["Teams"],
+            self.config.posts_tab_name: DEFAULT_HEADERS["PostingPlan"],
+            self.config.reply_queue_tab_name: DEFAULT_HEADERS["ReplyQueue"],
+            self.config.state_tab_name: DEFAULT_HEADERS["State"],
+        }
+        for tab, headers in mapping.items():
+            self.get_or_create_worksheet(tab, headers=headers)
+
+    def read_rows(self, tab_name: str) -> List[Dict[str, str]]:
+        ws = self.get_or_create_worksheet(tab_name)
+        rows = ws.get_all_records(default_blank="")
+        return [{k: str(v).strip() if v is not None else "" for k, v in row.items()} for row in rows]
+
+    def get_rows_with_ref(self, tab_name: str) -> List[SheetsRowRef]:
+        ws = self.get_or_create_worksheet(tab_name)
+        values = ws.get_all_values()
+        if not values:
+            return []
+        headers = values[0]
+        refs: List[SheetsRowRef] = []
+        for idx, row in enumerate(values[1:], start=2):
+            padded = row + ([""] * (len(headers) - len(row)))
+            refs.append(
+                SheetsRowRef(
+                    row_number=idx,
+                    values={headers[i]: str(padded[i]).strip() for i in range(len(headers))},
+                )
+            )
+        return refs
+
+    def append_row(self, tab_name: str, row_dict: Dict[str, str]) -> None:
+        ws = self.get_or_create_worksheet(tab_name)
+        headers = ws.row_values(1)
+        if not headers:
+            headers = list(row_dict.keys())
+            ws.append_row(headers)
+        ws.append_row([row_dict.get(h, "") for h in headers])
+
+    def update_rows_by_id(self, tab_name: str, id_column: str, id_value: str, updates: Dict[str, str]) -> int:
+        ws = self.get_or_create_worksheet(tab_name)
+        refs = self.get_rows_with_ref(tab_name)
+        headers = ws.row_values(1)
+        count = 0
+        for ref in refs:
+            if ref.values.get(id_column, "") != id_value:
+                continue
+            for field, val in updates.items():
+                if field not in headers:
+                    continue
+                col = headers.index(field) + 1
+                ws.update_cell(ref.row_number, col, val)
+            count += 1
+        return count
+
+    def get_state(self) -> Dict[str, str]:
+        rows = self.read_rows(self.config.state_tab_name)
+        return {row.get("state_key", ""): row.get("state_value", "") for row in rows if row.get("state_key")}
+
+    def set_state(self, state_key: str, state_value: str) -> None:
+        ws = self.get_or_create_worksheet(self.config.state_tab_name, headers=DEFAULT_HEADERS["State"])
+        refs = self.get_rows_with_ref(self.config.state_tab_name)
+        headers = ws.row_values(1)
+        value_col = headers.index("state_value") + 1
+        updated_col = headers.index("updated_at") + 1
+        for ref in refs:
+            if ref.values.get("state_key") == state_key:
+                ws.update_cell(ref.row_number, value_col, state_value)
+                ws.update_cell(ref.row_number, updated_col, self._now_utc_iso())
+                return
+        ws.append_row([state_key, state_value, self._now_utc_iso()])
+
+    def known_reply_comment_ids(self) -> set[str]:
+        rows = self.read_rows(self.config.reply_queue_tab_name)
+        return {row.get("reddit_comment_id", "") for row in rows if row.get("reddit_comment_id")}
+
+    def mark_post_notified(self, post_id: str, status: str = "reminded") -> None:
+        self.update_rows_by_id(
+            self.config.posts_tab_name,
+            "post_id",
+            post_id,
+            {"status": status, "last_notified_at": self._now_utc_iso()},
+        )
+
+    def append_reply_task(self, row: Dict[str, str]) -> None:
+        self.append_row(self.config.reply_queue_tab_name, row)
+
+    def update_team_member_telegram_id(self, member_name: str, telegram_user_id: str) -> bool:
+        ws = self.get_or_create_worksheet(self.config.teams_tab_name, headers=DEFAULT_HEADERS["Teams"])
+        headers = ws.row_values(1)
+        if "member_name" not in headers or "telegram_user_id" not in headers:
+            return False
+        name_col = headers.index("member_name") + 1
+        tg_col = headers.index("telegram_user_id") + 1
+        for r in range(2, ws.max_row + 1):
+            name = str(ws.cell(r, name_col).value or "").strip()
+            if name.lower() == member_name.strip().lower():
+                ws.update_cell(r, tg_col, telegram_user_id)
+                return True
+        return False
+
+    @staticmethod
+    def filter_rows(rows: Iterable[Dict[str, str]], key: str, values: set[str]) -> List[Dict[str, str]]:
+        normalized = {v.strip().lower() for v in values}
+        return [row for row in rows if str(row.get(key, "")).strip().lower() in normalized]
+
+

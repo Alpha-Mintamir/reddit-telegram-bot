@@ -1,0 +1,104 @@
+import json
+import os
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
+
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
+
+@dataclass
+class BotConfig:
+    telegram_bot_token: str
+    google_spreadsheet_id: str
+    reddit_client_id: str
+    reddit_client_secret: str
+    reddit_user_agent: str
+    llm_model: str = "gpt-4o-mini"
+    timezone: str = "Africa/Addis_Ababa"
+    daily_hour: int = 8
+    daily_minute: int = 0
+    poll_interval_minutes: int = 10
+    dry_run: bool = False
+    google_service_account_path: Optional[str] = None
+    google_service_account_json: Optional[Dict[str, Any]] = None
+    posts_tab_name: str = "PostingPlan"
+    teams_tab_name: str = "Teams"
+    reply_queue_tab_name: str = "ReplyQueue"
+    state_tab_name: str = "State"
+
+    @staticmethod
+    def _parse_bool(value: Optional[str], default: bool = False) -> bool:
+        if value is None:
+            return default
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    @classmethod
+    def from_env(
+        cls,
+        dry_run_override: Optional[bool] = None,
+        require_reddit: bool = True,
+    ) -> "BotConfig":
+        telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        google_spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip()
+        reddit_client_id = os.getenv("REDDIT_CLIENT_ID", "").strip()
+        reddit_client_secret = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
+        reddit_user_agent = os.getenv(
+            "REDDIT_USER_AGENT", "rt-cert-program-utils/telegram-reply-bot"
+        ).strip()
+
+        required = [
+            ("TELEGRAM_BOT_TOKEN", telegram_bot_token),
+            ("GOOGLE_SHEETS_SPREADSHEET_ID", google_spreadsheet_id),
+        ]
+        if require_reddit:
+            required.extend(
+                [
+                    ("REDDIT_CLIENT_ID", reddit_client_id),
+                    ("REDDIT_CLIENT_SECRET", reddit_client_secret),
+                    ("REDDIT_USER_AGENT", reddit_user_agent),
+                ]
+            )
+        missing = [k for k, v in required if not v]
+        if missing:
+            raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+
+        service_account_path = os.getenv("GOOGLE_SERVICE_ACCOUNT_PATH", "").strip() or None
+        service_account_json_raw = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+        service_account_json = None
+        if service_account_json_raw:
+            service_account_json = json.loads(service_account_json_raw)
+        elif not service_account_path:
+            raise ValueError(
+                "Provide GOOGLE_SERVICE_ACCOUNT_PATH or GOOGLE_SERVICE_ACCOUNT_JSON"
+            )
+
+        dry_run = (
+            dry_run_override
+            if dry_run_override is not None
+            else cls._parse_bool(os.getenv("BOT_DRY_RUN"), default=False)
+        )
+
+        return cls(
+            telegram_bot_token=telegram_bot_token,
+            google_spreadsheet_id=google_spreadsheet_id,
+            reddit_client_id=reddit_client_id,
+            reddit_client_secret=reddit_client_secret,
+            reddit_user_agent=reddit_user_agent,
+            llm_model=os.getenv("BOT_REPLY_MODEL", "gpt-4o-mini").strip(),
+            timezone=os.getenv("BOT_TIMEZONE", "Africa/Addis_Ababa").strip(),
+            daily_hour=int(os.getenv("BOT_DAILY_HOUR", "8")),
+            daily_minute=int(os.getenv("BOT_DAILY_MINUTE", "0")),
+            poll_interval_minutes=int(os.getenv("BOT_POLL_INTERVAL_MINUTES", "10")),
+            dry_run=dry_run,
+            google_service_account_path=service_account_path,
+            google_service_account_json=service_account_json,
+            posts_tab_name=os.getenv("BOT_POSTING_TAB", "PostingPlan").strip(),
+            teams_tab_name=os.getenv("BOT_TEAMS_TAB", "Teams").strip(),
+            reply_queue_tab_name=os.getenv("BOT_REPLY_QUEUE_TAB", "ReplyQueue").strip(),
+            state_tab_name=os.getenv("BOT_STATE_TAB", "State").strip(),
+        )
+
+
