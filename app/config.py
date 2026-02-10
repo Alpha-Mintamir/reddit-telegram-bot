@@ -9,6 +9,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _get_tab_name(env_key: str, default: str) -> str:
+    """Get tab name from env var, falling back to default if empty."""
+    value = os.getenv(env_key, default)
+    if not value or not value.strip():
+        return default
+    return value.strip()
+
+
 @dataclass
 class BotConfig:
     telegram_bot_token: str
@@ -109,10 +117,10 @@ class BotConfig:
             dry_run=dry_run,
             google_service_account_path=service_account_path,
             google_service_account_json=service_account_json,
-            posts_tab_name=os.getenv("BOT_POSTING_TAB", "PostingPlan").strip(),
-            teams_tab_name=os.getenv("BOT_TEAMS_TAB", "Teams").strip(),
-            reply_queue_tab_name=os.getenv("BOT_REPLY_QUEUE_TAB", "ReplyQueue").strip(),
-            state_tab_name=os.getenv("BOT_STATE_TAB", "State").strip(),
+            posts_tab_name=_get_tab_name("BOT_POSTING_TAB", "PostingPlan"),
+            teams_tab_name=_get_tab_name("BOT_TEAMS_TAB", "Teams"),
+            reply_queue_tab_name=_get_tab_name("BOT_REPLY_QUEUE_TAB", "ReplyQueue"),
+            state_tab_name=_get_tab_name("BOT_STATE_TAB", "State"),
         )
 
 
