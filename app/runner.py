@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import time
 import traceback
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from app.config import BotConfig
@@ -94,6 +95,23 @@ def _build_member_lookup(teams_rows: List[Dict[str, str]]) -> Dict[str, Dict[str
     return lookup
 
 
+def _build_chatid_to_member(teams_rows: List[Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+    """Reverse lookup: Telegram chat_id (numeric) -> member row."""
+    lookup: Dict[str, Dict[str, str]] = {}
+    for row in teams_rows:
+        tg_id = str(row.get("telegram_user_id", "")).strip()
+        if tg_id.isdigit():
+            lookup[tg_id] = row
+    return lookup
+
+
+# Regex that matches Reddit post URLs
+_REDDIT_URL_RE = re.compile(
+    r"https?://(?:www\.)?reddit\.com/r/\w+/comments/\w+",
+    re.IGNORECASE,
+)
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Escalation helpers
 # ══════════════════════════════════════════════════════════════════════════
@@ -143,50 +161,40 @@ def _escalate_to_alpha(
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Telegram ID collection
+# Telegram message processing  (commands, URLs, /start, approvals)
 # ══════════════════════════════════════════════════════════════════════════
 
-def collect_telegram_ids_once(ctx: RuntimeContext) -> int:
-    sheet_id = ctx.config.google_spreadsheet_id
-    sheet_id_masked = sheet_id[:8] + "..." + sheet_id[-8:] if len(sheet_id) > 16 else "***"
-    print(f"Reading Teams tab: '{ctx.config.teams_tab_name}' from sheet ID: {sheet_id_masked}")
+_HELP_TEXT = (
+    "Available commands:\n\n"
+    "/start - Link your Telegram account\n"
+    "/posted <reddit_url> - Submit a Reddit post URL\n"
+    "  (or just paste the URL directly)\n"
+    "/mystatus - See your pending tasks\n"
+    "/help - Show this help message\n\n"
+    "Admin commands:\n"
+    "/approve_<task_id> - Approve a reply suggestion\n"
+    "/reject_<task_id> - Reject a reply suggestion"
+)
 
-    # Debug: List all worksheets
-    try:
-        all_worksheets = ctx.sheets._spreadsheet.worksheets()
-        print(f"Available worksheets ({len(all_worksheets)}): "
-              f"{[ws.title for ws in all_worksheets[:10]]}{'...' if len(all_worksheets) > 10 else ''}")
 
-        teams_ws = None
-        for ws in all_worksheets:
-            if ws.title == ctx.config.teams_tab_name:
-                teams_ws = ws
-                break
-
-        if teams_ws:
-            all_values = teams_ws.get_all_values()
-            print(f"Teams tab found: {len(all_values)} total rows (including header)")
-            if all_values:
-                print(f"  Header: {all_values[0]}")
-                print(f"  Data rows: {len(all_values) - 1}")
-        else:
-            print(f"WARNING: Teams tab '{ctx.config.teams_tab_name}' NOT FOUND in worksheets!")
-    except Exception as e:
-        print(f"Error accessing worksheets: {e}")
-        traceback.print_exc()
-
+def process_telegram_updates(ctx: RuntimeContext) -> int:
+    """Process all pending Telegram messages: /start, URLs, approvals, etc."""
     teams_rows = ctx.sheets.read_rows(ctx.config.teams_tab_name)
-    print(f"Raw rows from sheet: {len(teams_rows)} rows")
 
+    # Build lookups
     username_to_member: Dict[str, str] = {}
-    for idx, row in enumerate(teams_rows, start=1):
+    for row in teams_rows:
         username = _normalize_username(row.get("telegram_user_id", ""))
         member_name = row.get("member_name", "").strip()
         if username and member_name:
             username_to_member[username] = member_name
 
-    print(f"Loaded {len(username_to_member)} username mappings from sheet.")
+    chatid_to_member = _build_chatid_to_member(teams_rows)
 
+    print(f"Loaded {len(username_to_member)} username mappings, "
+          f"{len(chatid_to_member)} chat-ID mappings from sheet.")
+
+    # Fetch updates
     state = ctx.sheets.get_state()
     offset_key = "telegram_updates_offset"
     offset_raw = state.get(offset_key, "")
@@ -195,11 +203,11 @@ def collect_telegram_ids_once(ctx: RuntimeContext) -> int:
     updates_resp = ctx.telegram.get_updates(offset=offset, timeout=0)
     updates = updates_resp.get("result", []) if isinstance(updates_resp, dict) else []
     if not updates:
-        print("No new Telegram updates found.")
         return 0
 
     processed = 0
     max_update_id = offset or 0
+
     for update in updates:
         update_id = int(update.get("update_id", 0))
         max_update_id = max(max_update_id, update_id)
@@ -212,42 +220,86 @@ def collect_telegram_ids_once(ctx: RuntimeContext) -> int:
         first_name = str(from_user.get("first_name", "")).strip()
         chat_id = str(chat.get("id", "")).strip()
 
-        # Handle approval commands from Alpha
+        if not chat_id or not text:
+            continue
+
+        # ── Route message to handler ────────────────────────────────
         if text.startswith("/approve_") or text.startswith("/reject_"):
             _handle_approval_command(ctx, text, chat_id)
-            continue
 
-        if not text.startswith("/start") or not chat_id:
-            continue
-
-        print(f"Processing /start from: username=@{username}, first_name={first_name}, chat_id={chat_id}")
-
-        member_name = username_to_member.get(username, "")
-        if not member_name and first_name:
-            for row in teams_rows:
-                sheet_name = row.get("member_name", "").strip()
-                if sheet_name.lower() == first_name.lower():
-                    member_name = sheet_name
-                    break
-
-        if member_name:
-            if not ctx.config.dry_run:
-                ctx.sheets.update_team_member_telegram_id(member_name, chat_id)
-            _send_or_print(ctx, chat_id, f"Hi {member_name}, your Telegram ID is linked successfully.")
+        elif text.startswith("/start"):
+            _handle_start(ctx, teams_rows, username_to_member, username, first_name, chat_id)
             processed += 1
+
+        elif text.startswith("/posted"):
+            _handle_posted_command(ctx, teams_rows, chatid_to_member, text, chat_id)
+
+        elif text.startswith("/mystatus"):
+            _handle_mystatus(ctx, chatid_to_member, chat_id)
+
+        elif text.startswith("/help"):
+            _send_or_print(ctx, chat_id, _HELP_TEXT)
+
+        elif _REDDIT_URL_RE.search(text):
+            # User pasted a raw Reddit URL (no /posted command)
+            _handle_posted_command(ctx, teams_rows, chatid_to_member, text, chat_id)
+
         else:
+            # Unknown message -- gently guide
             _send_or_print(
                 ctx, chat_id,
-                f"You are not mapped yet in the team sheet. "
-                f"Your Telegram username is @{username or '(none)'}. "
-                f"Please share your @username with the admin.",
+                "I didn't understand that. Send /help to see available commands.\n\n"
+                "To submit your Reddit post URL, just paste the link here!"
             )
 
     if not ctx.config.dry_run:
         ctx.sheets.set_state(offset_key, str(max_update_id + 1))
-    print(f"Collected/confirmed Telegram IDs for {processed} member(s).")
+
     return processed
 
+
+# -- /start handler ----------------------------------------------------------
+
+def _handle_start(
+    ctx: RuntimeContext,
+    teams_rows: List[Dict[str, str]],
+    username_to_member: Dict[str, str],
+    username: str,
+    first_name: str,
+    chat_id: str,
+) -> None:
+    """Link a team member's Telegram ID."""
+    print(f"Processing /start from: username=@{username}, "
+          f"first_name={first_name}, chat_id={chat_id}")
+
+    member_name = username_to_member.get(username, "")
+    if not member_name and first_name:
+        for row in teams_rows:
+            sheet_name = row.get("member_name", "").strip()
+            if sheet_name.lower() == first_name.lower():
+                member_name = sheet_name
+                break
+
+    if member_name:
+        if not ctx.config.dry_run:
+            ctx.sheets.update_team_member_telegram_id(member_name, chat_id)
+        _send_or_print(
+            ctx, chat_id,
+            f"Hi {member_name}, your Telegram ID is linked successfully!\n\n"
+            f"When you post on Reddit, just paste the URL here and "
+            f"I'll take care of the rest.\n\n"
+            f"Send /help to see all commands."
+        )
+    else:
+        _send_or_print(
+            ctx, chat_id,
+            f"You are not mapped yet in the team sheet. "
+            f"Your Telegram username is @{username or '(none)'}. "
+            f"Please share your @username with the admin.",
+        )
+
+
+# -- /approve & /reject handler ----------------------------------------------
 
 def _handle_approval_command(ctx: RuntimeContext, text: str, chat_id: str) -> None:
     """Process /approve_<id> or /reject_<id> commands."""
@@ -269,6 +321,210 @@ def _handle_approval_command(ctx: RuntimeContext, text: str, chat_id: str) -> No
             chat_id=chat_id,
             text=f"Could not find task {task_id}"
         )
+
+
+# -- /posted + raw URL handler -----------------------------------------------
+
+def _handle_posted_command(
+    ctx: RuntimeContext,
+    teams_rows: List[Dict[str, str]],
+    chatid_to_member: Dict[str, Dict[str, str]],
+    text: str,
+    chat_id: str,
+) -> None:
+    """Handle when a user sends a Reddit URL (via /posted or raw paste).
+
+    Flow:
+    1. Extract the Reddit URL from the message
+    2. Identify the sender (chat_id -> member)
+    3. Find their pending/reminded post in PostingPlan
+    4. Update the sheet with the URL + status=posted
+    5. Confirm to the user
+    """
+    # 1. Extract URL
+    url_match = _REDDIT_URL_RE.search(text)
+    if not url_match:
+        _send_or_print(
+            ctx, chat_id,
+            "I couldn't find a valid Reddit post URL in your message.\n\n"
+            "Please send a link like:\n"
+            "https://www.reddit.com/r/subreddit/comments/abc123/post_title/"
+        )
+        return
+
+    reddit_url = url_match.group(0)
+    # Clean up: ensure it ends nicely (remove trailing fragments)
+    reddit_url = reddit_url.split("?")[0].rstrip("/") + "/"
+
+    # 2. Identify sender
+    member_row = chatid_to_member.get(chat_id)
+    if not member_row:
+        _send_or_print(
+            ctx, chat_id,
+            "I don't recognize your Telegram account. "
+            "Please send /start first to link your account."
+        )
+        return
+
+    member_name = member_row.get("member_name", "").strip()
+    logger.info("Reddit URL received from %s (chat %s): %s", member_name, chat_id, reddit_url)
+
+    # 3. Find their pending post in PostingPlan
+    posts_rows = ctx.sheets.read_rows(ctx.config.posts_tab_name)
+    today = _today_iso(ctx.config)
+
+    # Look for posts assigned to this member that need a URL
+    candidate_posts = []
+    for post in posts_rows:
+        poster = post.get("poster_member_name", "").strip()
+        status = post.get("status", "").strip().lower()
+        existing_url = post.get("reddit_post_url", "").strip()
+
+        # Match: same poster, not already posted, no URL yet
+        if (poster.lower() == member_name.lower()
+                and status not in {"done", "posted", "cancelled", "deleted"}
+                and not existing_url):
+            candidate_posts.append(post)
+
+    if not candidate_posts:
+        # Maybe they already have a URL posted -- check if they're re-submitting
+        resubmit_candidates = [
+            p for p in posts_rows
+            if p.get("poster_member_name", "").strip().lower() == member_name.lower()
+            and p.get("status", "").strip().lower() in {"posted", "reminded"}
+            and p.get("scheduled_date", "").strip() == today
+        ]
+        if resubmit_candidates:
+            post = resubmit_candidates[0]
+            post_id = post.get("post_id", "")
+            if not ctx.config.dry_run:
+                ctx.sheets.update_rows_by_id(
+                    ctx.config.posts_tab_name, "post_id", post_id,
+                    {"reddit_post_url": reddit_url, "status": "posted"},
+                )
+            _send_or_print(
+                ctx, chat_id,
+                f"Updated! Post {post_id} URL has been updated to:\n{reddit_url}\n\n"
+                f"The bot will now start monitoring for comments."
+            )
+            return
+
+        _send_or_print(
+            ctx, chat_id,
+            f"Hi {member_name}, I couldn't find a pending post assigned to you.\n\n"
+            f"If you believe this is a mistake, please contact the admin."
+        )
+        return
+
+    # Pick the best candidate: prefer today's post, then the nearest upcoming one
+    best_post = None
+    for post in candidate_posts:
+        sched = post.get("scheduled_date", "").strip()
+        if sched == today:
+            best_post = post
+            break
+    if not best_post:
+        # Take the one with the closest scheduled date
+        candidate_posts.sort(key=lambda p: p.get("scheduled_date", "9999"))
+        best_post = candidate_posts[0]
+
+    post_id = best_post.get("post_id", "").strip()
+    sched_date = best_post.get("scheduled_date", "").strip()
+
+    # 4. Update the sheet
+    if not ctx.config.dry_run:
+        ctx.sheets.update_rows_by_id(
+            ctx.config.posts_tab_name, "post_id", post_id,
+            {"reddit_post_url": reddit_url, "status": "posted"},
+        )
+
+    # 5. Confirm to user
+    _send_or_print(
+        ctx, chat_id,
+        f"Got it, {member_name}! Your Reddit post URL has been saved.\n\n"
+        f"Post ID: {post_id}\n"
+        f"Scheduled: {sched_date}\n"
+        f"URL: {reddit_url}\n\n"
+        f"The bot will now monitor this post for comments and "
+        f"send reply suggestions to your team. Great job!"
+    )
+    logger.info("Post %s URL updated by %s: %s", post_id, member_name, reddit_url)
+
+    # Notify Alpha
+    _escalate_to_alpha(
+        ctx, teams_rows,
+        "Post URL submitted",
+        f"{member_name} has posted and submitted the URL for post {post_id}.\n"
+        f"URL: {reddit_url}\n"
+        f"Comment monitoring is now active.",
+    )
+
+
+# -- /mystatus handler -------------------------------------------------------
+
+def _handle_mystatus(
+    ctx: RuntimeContext,
+    chatid_to_member: Dict[str, Dict[str, str]],
+    chat_id: str,
+) -> None:
+    """Show the member their pending posts and assigned reply tasks."""
+    member_row = chatid_to_member.get(chat_id)
+    if not member_row:
+        _send_or_print(ctx, chat_id, "I don't recognize you. Send /start first.")
+        return
+
+    member_name = member_row.get("member_name", "").strip()
+    team_id = member_row.get("team_id", "").strip()
+
+    # Pending posts (assigned to them as poster)
+    posts_rows = ctx.sheets.read_rows(ctx.config.posts_tab_name)
+    my_posts = [
+        p for p in posts_rows
+        if p.get("poster_member_name", "").strip().lower() == member_name.lower()
+        and p.get("status", "").strip().lower() not in {"done", "cancelled", "deleted"}
+    ]
+
+    # Pending reply tasks (assigned to them)
+    reply_rows = ctx.sheets.read_rows(ctx.config.reply_queue_tab_name)
+    my_replies = [
+        r for r in reply_rows
+        if r.get("assigned_member_name", "").strip().lower() == member_name.lower()
+        and r.get("status", "").strip().lower() in {"sent", "pending_approval", "approved"}
+        and not r.get("reply_posted_at", "").strip()
+    ]
+
+    lines = [f"Status for {member_name} (Team {team_id}):\n"]
+
+    # Posts section
+    if my_posts:
+        lines.append("-- Your Scheduled Posts --")
+        for p in my_posts:
+            pid = p.get("post_id", "?")
+            sdate = p.get("scheduled_date", "?")
+            status = p.get("status", "?")
+            url = p.get("reddit_post_url", "").strip()
+            if url:
+                lines.append(f"  {pid} | {sdate} | {status} | URL submitted")
+            else:
+                lines.append(f"  {pid} | {sdate} | {status} | Waiting for URL")
+        lines.append("")
+    else:
+        lines.append("No pending posts assigned to you.\n")
+
+    # Reply tasks section
+    if my_replies:
+        lines.append("-- Your Pending Reply Tasks --")
+        for r in my_replies:
+            tid = r.get("reply_task_id", "?")[:8]
+            author = r.get("comment_author", "?")
+            status = r.get("status", "?")
+            lines.append(f"  Task ...{tid} | Reply to u/{author} | {status}")
+        lines.append("")
+    else:
+        lines.append("No pending reply tasks.\n")
+
+    lines.append("Send /help for available commands.")
+    _send_or_print(ctx, chat_id, "\n".join(lines))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -312,8 +568,13 @@ def send_daily_posting_reminders(ctx: RuntimeContext) -> int:
         post_content = post.get("post_content", "").strip()
         scheduled_time = post.get("scheduled_time", "").strip() or "today"
         message = (
-            f"Posting reminder\n\nPost ID: {post_id}\nScheduled: {today} {scheduled_time}\n\n"
-            f"Post content:\n{post_content}"
+            f"Posting reminder\n\n"
+            f"Post ID: {post_id}\n"
+            f"Scheduled: {today} {scheduled_time}\n\n"
+            f"Post content:\n{post_content}\n\n"
+            f"---\n"
+            f"After you post on Reddit, just paste the URL here "
+            f"and I'll start monitoring for comments automatically!"
         )
         _send_or_print(ctx, chat_id=chat_id, text=message)
         if not ctx.config.dry_run and post.get("post_id"):
@@ -925,14 +1186,15 @@ def collect_engagement_metrics(ctx: RuntimeContext) -> int:
 # ══════════════════════════════════════════════════════════════════════════
 
 def run_once(ctx: RuntimeContext) -> None:
-    """Single execution: reminders + poll + approvals + timeouts + metrics."""
+    """Single execution: telegram msgs + reminders + poll + approvals + timeouts + metrics."""
+    tg_msgs = process_telegram_updates(ctx)
     reminders = send_daily_posting_reminders(ctx)
     replies = poll_comments_and_dispatch_replies(ctx)
     approved = process_pending_approvals(ctx)
     reassigned = check_reply_timeouts_and_reassign(ctx)
     metrics = collect_engagement_metrics(ctx)
     print(
-        f"Run complete: reminders={reminders}, reply_tasks={replies}, "
+        f"Run complete: tg_updates={tg_msgs}, reminders={reminders}, reply_tasks={replies}, "
         f"approved_sent={approved}, reassigned={reassigned}, metrics={metrics}"
     )
 
@@ -954,7 +1216,7 @@ def main() -> None:
 
     if args.mode == "collect-ids":
         ctx = RuntimeContext(config=config, sheets=sheets, reddit=None, telegram=telegram)
-        collect_telegram_ids_once(ctx)
+        process_telegram_updates(ctx)
         return
 
     ctx = RuntimeContext(
@@ -1015,8 +1277,8 @@ def main() -> None:
             if not config.dry_run:
                 sheets.set_state(metrics_cycle_key, str(cycle + 1))
 
-            # Collect Telegram IDs (also runs in daemon to pick up new /start)
-            collect_telegram_ids_once(ctx)
+            # Process all Telegram messages (URLs, /start, approvals, etc.)
+            process_telegram_updates(ctx)
 
             consecutive_errors = 0  # Reset on success
 
