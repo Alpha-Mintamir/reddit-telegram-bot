@@ -710,10 +710,11 @@ def _try_link_test_post_url(
 
 
 def poll_test_post_comments(ctx: RuntimeContext) -> int:
-    """Poll comments on active test posts and send every new one to Alpha.
+    """Poll comments on active test posts, generate reply suggestions,
+    and send both the comment and the suggested reply to Alpha.
 
-    This is separate from the normal reply workflow -- no assignments,
-    no approval, no reply generation. Just raw comment forwarding.
+    This is separate from the normal workflow -- all replies go to
+    Alpha directly, no team assignment, no approval queue.
 
     Returns count of comments sent.
     """
@@ -793,7 +794,17 @@ def poll_test_post_comments(ctx: RuntimeContext) -> int:
                 )
             continue
 
-        # Send each new comment to Alpha
+        # Fetch post context once for reply generation
+        post_context: Optional[Dict[str, str]] = None
+        try:
+            post_context = ctx.reddit.get_submission_context(reddit_url)
+        except Exception as exc:
+            logger.warning("Could not get post context for test %s: %s", test_id, exc)
+
+        # Collect recent suggestions for variety
+        recent_suggestions: List[str] = []
+
+        # Send each new comment + generated reply to Alpha
         new_ids = []
         for comment in comments:
             cid = comment.get("comment_id", "")
@@ -804,14 +815,49 @@ def poll_test_post_comments(ctx: RuntimeContext) -> int:
             if cid in known_ids:
                 continue
 
-            msg = (
-                f"NEW COMMENT on test post\n\n"
-                f"Test ID: {test_id}\n"
-                f"By: u/{author}\n"
-                f"URL: {comment_url}\n\n"
-                f"{body[:1500]}"
-            )
-            _send_or_print(ctx, chat_id, msg)
+            # ── Generate a reply suggestion ─────────────────────────
+            suggestion = ""
+            if post_context:
+                try:
+                    suggestion = generate_reply_suggestion(
+                        llm_model=ctx.config.llm_model,
+                        post_context=post_context,
+                        comment_context=comment,
+                        recent_suggestions=recent_suggestions,
+                    )
+                    # Safety check
+                    safety_err = check_content_safety(suggestion)
+                    if safety_err:
+                        logger.warning("Test reply failed safety: %s", safety_err.reason)
+                        suggestion = FALLBACK_REPLY
+                    recent_suggestions.append(suggestion)
+                except Exception as exc:
+                    logger.warning("LLM error for test comment %s: %s", cid, exc)
+                    suggestion = "(Could not generate reply -- LLM error)"
+
+            # ── Build message for Alpha ─────────────────────────────
+            msg_lines = [
+                "NEW COMMENT on test post\n",
+                f"Test ID: {test_id}",
+                f"By: u/{author}",
+                f"URL: {comment_url}\n",
+                f"Comment:\n{body[:1000]}",
+            ]
+
+            if suggestion:
+                msg_lines.extend([
+                    "\n---",
+                    "SUGGESTED REPLY:\n",
+                    suggestion,
+                    "\n---",
+                    "Copy the reply above and post it on Reddit!",
+                ])
+            else:
+                msg_lines.append(
+                    "\n(No reply suggestion available -- post context could not be fetched)"
+                )
+
+            _send_or_print(ctx, chat_id, "\n".join(msg_lines))
             new_ids.append(cid)
             total_sent += 1
 

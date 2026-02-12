@@ -26,6 +26,7 @@ def sync_schema():
         config.reply_queue_tab_name: DEFAULT_HEADERS["ReplyQueue"],
         config.state_tab_name: DEFAULT_HEADERS["State"],
         config.metrics_tab_name: DEFAULT_HEADERS["Metrics"],
+        config.test_posts_tab_name: DEFAULT_HEADERS["TestPosts"],
     }
     
     for tab_name, headers in tabs_to_sync.items():
@@ -57,11 +58,8 @@ def sync_schema():
     
     print("\n[SUCCESS] Schema sync complete!")
     print(f"\nUpdated tabs:")
-    print(f"  - {config.teams_tab_name}: {len(DEFAULT_HEADERS['Teams'])} columns")
-    print(f"  - {config.posts_tab_name}: {len(DEFAULT_HEADERS['PostingPlan'])} columns")
-    print(f"  - {config.reply_queue_tab_name}: {len(DEFAULT_HEADERS['ReplyQueue'])} columns (added reply_posted_at, reply_url)")
-    print(f"  - {config.state_tab_name}: {len(DEFAULT_HEADERS['State'])} columns")
-    print(f"  - {config.metrics_tab_name}: {len(DEFAULT_HEADERS['Metrics'])} columns (NEW)")
+    for tab_name, headers in tabs_to_sync.items():
+        print(f"  - {tab_name}: {len(headers)} columns")
 
 if __name__ == "__main__":
     try:
