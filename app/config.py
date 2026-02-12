@@ -35,6 +35,7 @@ class BotConfig:
     reply_queue_tab_name: str = "ReplyQueue"
     state_tab_name: str = "State"
     metrics_tab_name: str = "Metrics"
+    test_posts_tab_name: str = "TestPosts"
 
     # --- Robustness / escalation settings ---
     # Hours before a sent reply task is considered "timed out"
@@ -133,6 +134,7 @@ class BotConfig:
             reply_queue_tab_name=_get_tab_name("BOT_REPLY_QUEUE_TAB", "ReplyQueue"),
             state_tab_name=_get_tab_name("BOT_STATE_TAB", "State"),
             metrics_tab_name=_get_tab_name("BOT_METRICS_TAB", "Metrics"),
+            test_posts_tab_name=_get_tab_name("BOT_TEST_POSTS_TAB", "TestPosts"),
             # Robustness
             reply_timeout_hours=cls._parse_float(os.getenv("BOT_REPLY_TIMEOUT_HOURS"), 24.0),
             max_reassign_attempts=cls._parse_int(os.getenv("BOT_MAX_REASSIGN"), 2),

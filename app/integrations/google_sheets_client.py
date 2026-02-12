@@ -60,6 +60,17 @@ DEFAULT_HEADERS = {
         "metric_date",
         "updated_at",
     ],
+    "TestPosts": [
+        "test_id",
+        "triggered_by",
+        "test_topic",
+        "reddit_post_url",
+        "status",
+        "created_at",
+        "url_submitted_at",
+        "last_polled_at",
+        "comments_sent",
+    ],
     "State": ["state_key", "state_value", "updated_at"],
 }
 
@@ -102,6 +113,7 @@ class GoogleSheetsClient:
             self.config.reply_queue_tab_name: DEFAULT_HEADERS["ReplyQueue"],
             self.config.state_tab_name: DEFAULT_HEADERS["State"],
             self.config.metrics_tab_name: DEFAULT_HEADERS["Metrics"],
+            self.config.test_posts_tab_name: DEFAULT_HEADERS["TestPosts"],
         }
         for tab, headers in mapping.items():
             self.get_or_create_worksheet(tab, headers=headers)

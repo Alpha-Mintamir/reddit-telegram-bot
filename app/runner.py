@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import random
 import re
 import time
 import traceback
@@ -173,7 +174,9 @@ _HELP_TEXT = (
     "/help - Show this help message\n\n"
     "Admin commands:\n"
     "/approve_<task_id> - Approve a reply suggestion\n"
-    "/reject_<task_id> - Reject a reply suggestion"
+    "/reject_<task_id> - Reject a reply suggestion\n\n"
+    "Test mode (Admin only):\n"
+    "/test - Start a test: get a topic, post it, and see live comments"
 )
 
 
@@ -232,7 +235,18 @@ def process_telegram_updates(ctx: RuntimeContext) -> int:
             processed += 1
 
         elif text.startswith("/posted"):
-            _handle_posted_command(ctx, teams_rows, chatid_to_member, text, chat_id)
+            # Check if this URL is for a pending test post first
+            url_match = _REDDIT_URL_RE.search(text)
+            if url_match and _try_link_test_post_url(ctx, chat_id, url_match.group(0).split("?")[0].rstrip("/") + "/"):
+                pass  # Handled as test post
+            else:
+                _handle_posted_command(ctx, teams_rows, chatid_to_member, text, chat_id)
+
+        elif text.startswith("/test_cancel"):
+            _handle_test_cancel(ctx, teams_rows, chat_id)
+
+        elif text.startswith("/test"):
+            _handle_test_command(ctx, teams_rows, chat_id)
 
         elif text.startswith("/mystatus"):
             _handle_mystatus(ctx, chatid_to_member, chat_id)
@@ -241,8 +255,10 @@ def process_telegram_updates(ctx: RuntimeContext) -> int:
             _send_or_print(ctx, chat_id, _HELP_TEXT)
 
         elif _REDDIT_URL_RE.search(text):
-            # User pasted a raw Reddit URL (no /posted command)
-            _handle_posted_command(ctx, teams_rows, chatid_to_member, text, chat_id)
+            # Raw Reddit URL pasted -- check for test post first
+            raw_url = _REDDIT_URL_RE.search(text).group(0).split("?")[0].rstrip("/") + "/"
+            if not _try_link_test_post_url(ctx, chat_id, raw_url):
+                _handle_posted_command(ctx, teams_rows, chatid_to_member, text, chat_id)
 
         else:
             # Unknown message -- gently guide
@@ -525,6 +541,295 @@ def _handle_mystatus(
 
     lines.append("Send /help for available commands.")
     _send_or_print(ctx, chat_id, "\n".join(lines))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# TEST MODE  (Admin-only: /test -> post -> live comment feed)
+# ══════════════════════════════════════════════════════════════════════════
+
+_TEST_TOPICS = [
+    "What's one underrated tool or library in your stack that you wish more people knew about?",
+    "For those who transitioned into tech from a non-CS background, what was your biggest 'aha' moment?",
+    "What's a software engineering best practice that you think is actually overrated?",
+    "How do you handle burnout when working on a long-running project?",
+    "What's the most useful thing you learned in the last month that improved your workflow?",
+    "If you could mass-delete one bad practice from every codebase, what would it be?",
+    "What side project taught you the most about real-world development?",
+    "What's a technology or framework that you initially hated but grew to love?",
+    "How do you evaluate whether a new tech trend is worth adopting or just hype?",
+    "What's your go-to strategy for debugging a problem you've never seen before?",
+    "What advice would you give someone starting their first dev job?",
+    "What common coding interview question do you think is completely useless?",
+]
+
+
+def _is_alpha(ctx: RuntimeContext, chat_id: str, teams_rows: List[Dict[str, str]]) -> bool:
+    """Check if the chat_id belongs to Alpha."""
+    alpha_id = _find_alpha_telegram_id(teams_rows, ctx.config)
+    return alpha_id is not None and alpha_id == chat_id
+
+
+def _handle_test_command(
+    ctx: RuntimeContext,
+    teams_rows: List[Dict[str, str]],
+    chat_id: str,
+) -> None:
+    """Handle /test command: give Alpha a test topic to post on Reddit."""
+
+    # Only Alpha can use /test
+    if not _is_alpha(ctx, chat_id, teams_rows):
+        _send_or_print(ctx, chat_id, "This command is for the admin only.")
+        return
+
+    # Check if there's already a pending test post (waiting for URL)
+    test_rows = ctx.sheets.read_rows(ctx.config.test_posts_tab_name)
+    pending_tests = [
+        t for t in test_rows
+        if t.get("status", "").strip().lower() == "waiting_for_url"
+        and t.get("triggered_by", "").strip() == chat_id
+    ]
+
+    if pending_tests:
+        existing = pending_tests[0]
+        _send_or_print(
+            ctx, chat_id,
+            f"You already have a pending test!\n\n"
+            f"Topic: {existing.get('test_topic', '')}\n\n"
+            f"Post it on Reddit and paste the URL here.\n"
+            f"Or send /test_cancel to cancel it and start a new one."
+        )
+        return
+
+    # Pick a random topic
+    topic = random.choice(_TEST_TOPICS)
+    test_id = f"test_{uuid.uuid4().hex[:8]}"
+
+    test_row = {
+        "test_id": test_id,
+        "triggered_by": chat_id,
+        "test_topic": topic,
+        "reddit_post_url": "",
+        "status": "waiting_for_url",
+        "created_at": _now_utc().isoformat(),
+        "url_submitted_at": "",
+        "last_polled_at": "",
+        "comments_sent": "0",
+    }
+
+    if not ctx.config.dry_run:
+        ctx.sheets.append_row(ctx.config.test_posts_tab_name, test_row)
+
+    _send_or_print(
+        ctx, chat_id,
+        f"TEST MODE STARTED\n\n"
+        f"Test ID: {test_id}\n\n"
+        f"Here's your test topic:\n\n"
+        f"\"{topic}\"\n\n"
+        f"Steps:\n"
+        f"1. Post this (or something similar) on a subreddit\n"
+        f"2. Paste the Reddit URL here\n"
+        f"3. I'll monitor it and send you every new comment live!\n\n"
+        f"Send /test_cancel to cancel."
+    )
+    logger.info("Test mode started by %s: %s", chat_id, test_id)
+
+
+def _handle_test_cancel(
+    ctx: RuntimeContext,
+    teams_rows: List[Dict[str, str]],
+    chat_id: str,
+) -> None:
+    """Cancel a pending test post."""
+    if not _is_alpha(ctx, chat_id, teams_rows):
+        _send_or_print(ctx, chat_id, "This command is for the admin only.")
+        return
+
+    test_rows = ctx.sheets.read_rows(ctx.config.test_posts_tab_name)
+    cancelled = 0
+    for t in test_rows:
+        status = t.get("status", "").strip().lower()
+        if status in {"waiting_for_url", "monitoring"} and t.get("triggered_by", "").strip() == chat_id:
+            test_id = t.get("test_id", "")
+            if test_id and not ctx.config.dry_run:
+                ctx.sheets.update_rows_by_id(
+                    ctx.config.test_posts_tab_name, "test_id", test_id,
+                    {"status": "cancelled"},
+                )
+                cancelled += 1
+
+    if cancelled:
+        _send_or_print(ctx, chat_id, f"Cancelled {cancelled} test(s). Send /test to start a new one.")
+    else:
+        _send_or_print(ctx, chat_id, "No active tests to cancel.")
+
+
+def _try_link_test_post_url(
+    ctx: RuntimeContext,
+    chat_id: str,
+    reddit_url: str,
+) -> bool:
+    """Try to match a Reddit URL to a pending test post for this user.
+
+    Returns True if it was matched as a test post (caller should not
+    handle it as a normal post).
+    """
+    test_rows = ctx.sheets.read_rows(ctx.config.test_posts_tab_name)
+    pending = [
+        t for t in test_rows
+        if t.get("status", "").strip().lower() == "waiting_for_url"
+        and t.get("triggered_by", "").strip() == chat_id
+    ]
+
+    if not pending:
+        return False
+
+    test_post = pending[0]
+    test_id = test_post.get("test_id", "")
+
+    if not ctx.config.dry_run:
+        ctx.sheets.update_rows_by_id(
+            ctx.config.test_posts_tab_name, "test_id", test_id,
+            {
+                "reddit_post_url": reddit_url,
+                "status": "monitoring",
+                "url_submitted_at": _now_utc().isoformat(),
+            },
+        )
+
+    _send_or_print(
+        ctx, chat_id,
+        f"Test post URL saved!\n\n"
+        f"Test ID: {test_id}\n"
+        f"URL: {reddit_url}\n\n"
+        f"I'm now monitoring this post. Every new comment will be "
+        f"sent to you right here. Sit back and watch!\n\n"
+        f"Send /test_cancel to stop monitoring."
+    )
+    logger.info("Test post URL linked: %s -> %s", test_id, reddit_url)
+    return True
+
+
+def poll_test_post_comments(ctx: RuntimeContext) -> int:
+    """Poll comments on active test posts and send every new one to Alpha.
+
+    This is separate from the normal reply workflow -- no assignments,
+    no approval, no reply generation. Just raw comment forwarding.
+
+    Returns count of comments sent.
+    """
+    if ctx.reddit is None:
+        return 0
+
+    test_rows = ctx.sheets.read_rows(ctx.config.test_posts_tab_name)
+    active_tests = [
+        t for t in test_rows
+        if t.get("status", "").strip().lower() == "monitoring"
+        and t.get("reddit_post_url", "").strip()
+    ]
+
+    if not active_tests:
+        return 0
+
+    state = ctx.sheets.get_state()
+    total_sent = 0
+
+    for test in active_tests:
+        test_id = test.get("test_id", "")
+        chat_id = test.get("triggered_by", "").strip()
+        reddit_url = test.get("reddit_post_url", "").strip()
+        prev_comments_sent = int(test.get("comments_sent", "0") or "0")
+
+        if not chat_id or not reddit_url:
+            continue
+
+        # Check if post is still alive
+        try:
+            if not ctx.reddit.is_post_alive(reddit_url):
+                logger.warning("Test post %s appears deleted", test_id)
+                if not ctx.config.dry_run:
+                    ctx.sheets.update_rows_by_id(
+                        ctx.config.test_posts_tab_name, "test_id", test_id,
+                        {"status": "deleted"},
+                    )
+                _send_or_print(
+                    ctx, chat_id,
+                    f"Your test post ({test_id}) appears to have been "
+                    f"deleted or removed. Monitoring stopped."
+                )
+                continue
+        except Exception:
+            pass  # Continue polling anyway
+
+        # Track which comments we've already sent for this test
+        known_key = f"test_known_comments_{test_id}"
+        known_ids_raw = state.get(known_key, "")
+        known_ids = set(known_ids_raw.split(",")) if known_ids_raw else set()
+
+        # Fetch all comments
+        try:
+            comments = ctx.reddit.fetch_new_comments(
+                post_url=reddit_url,
+                known_comment_ids=known_ids,
+                min_created_utc=None,
+            )
+        except RedditPostDeleted:
+            if not ctx.config.dry_run:
+                ctx.sheets.update_rows_by_id(
+                    ctx.config.test_posts_tab_name, "test_id", test_id,
+                    {"status": "deleted"},
+                )
+            _send_or_print(ctx, chat_id, f"Test post {test_id} was deleted. Monitoring stopped.")
+            continue
+        except Exception as exc:
+            logger.warning("Error polling test post %s: %s", test_id, exc)
+            continue
+
+        if not comments:
+            # Update last_polled_at even if no new comments
+            if not ctx.config.dry_run:
+                ctx.sheets.update_rows_by_id(
+                    ctx.config.test_posts_tab_name, "test_id", test_id,
+                    {"last_polled_at": _now_utc().isoformat()},
+                )
+            continue
+
+        # Send each new comment to Alpha
+        new_ids = []
+        for comment in comments:
+            cid = comment.get("comment_id", "")
+            author = comment.get("author", "[deleted]")
+            body = comment.get("body", "")
+            comment_url = comment.get("comment_url", "")
+
+            if cid in known_ids:
+                continue
+
+            msg = (
+                f"NEW COMMENT on test post\n\n"
+                f"Test ID: {test_id}\n"
+                f"By: u/{author}\n"
+                f"URL: {comment_url}\n\n"
+                f"{body[:1500]}"
+            )
+            _send_or_print(ctx, chat_id, msg)
+            new_ids.append(cid)
+            total_sent += 1
+
+        # Persist known comment IDs
+        if new_ids and not ctx.config.dry_run:
+            known_ids.update(new_ids)
+            # Remove empty strings
+            known_ids.discard("")
+            ctx.sheets.set_state(known_key, ",".join(known_ids))
+            ctx.sheets.update_rows_by_id(
+                ctx.config.test_posts_tab_name, "test_id", test_id,
+                {
+                    "last_polled_at": _now_utc().isoformat(),
+                    "comments_sent": str(prev_comments_sent + len(new_ids)),
+                },
+            )
+
+    return total_sent
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1186,16 +1491,18 @@ def collect_engagement_metrics(ctx: RuntimeContext) -> int:
 # ══════════════════════════════════════════════════════════════════════════
 
 def run_once(ctx: RuntimeContext) -> None:
-    """Single execution: telegram msgs + reminders + poll + approvals + timeouts + metrics."""
+    """Single execution: telegram msgs + reminders + poll + approvals + timeouts + metrics + test."""
     tg_msgs = process_telegram_updates(ctx)
     reminders = send_daily_posting_reminders(ctx)
     replies = poll_comments_and_dispatch_replies(ctx)
     approved = process_pending_approvals(ctx)
     reassigned = check_reply_timeouts_and_reassign(ctx)
     metrics = collect_engagement_metrics(ctx)
+    test_comments = poll_test_post_comments(ctx)
     print(
         f"Run complete: tg_updates={tg_msgs}, reminders={reminders}, reply_tasks={replies}, "
-        f"approved_sent={approved}, reassigned={reassigned}, metrics={metrics}"
+        f"approved_sent={approved}, reassigned={reassigned}, metrics={metrics}, "
+        f"test_comments={test_comments}"
     )
 
 
@@ -1279,6 +1586,11 @@ def main() -> None:
 
             # Process all Telegram messages (URLs, /start, approvals, etc.)
             process_telegram_updates(ctx)
+
+            # Poll test post comments (every cycle -- test mode needs fast feedback)
+            test_sent = poll_test_post_comments(ctx)
+            if test_sent:
+                print(f"Test comments forwarded: {test_sent}")
 
             consecutive_errors = 0  # Reset on success
 
