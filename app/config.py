@@ -89,12 +89,16 @@ class BotConfig:
             else cls._parse_bool(os.getenv("BOT_DRY_RUN"), default=False)
         )
 
+        # Handle timezone - ensure it's not empty
+        timezone_raw = os.getenv("BOT_TIMEZONE", "Africa/Addis_Ababa").strip()
+        timezone = timezone_raw if timezone_raw else "Africa/Addis_Ababa"
+        
         return cls(
             telegram_bot_token=telegram_bot_token,
             google_spreadsheet_id=google_spreadsheet_id,
             reddit_user_agent=reddit_user_agent,
             llm_model=os.getenv("BOT_REPLY_MODEL", "gpt-4o-mini").strip(),
-            timezone=os.getenv("BOT_TIMEZONE", "Africa/Addis_Ababa").strip(),
+            timezone=timezone,
             daily_hour=cls._parse_int(os.getenv("BOT_DAILY_HOUR"), 8),
             daily_minute=cls._parse_int(os.getenv("BOT_DAILY_MINUTE"), 0),
             poll_interval_minutes=cls._parse_int(
