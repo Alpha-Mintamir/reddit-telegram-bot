@@ -10,9 +10,13 @@ from app.config import BotConfig
 
 class RedditClient:
     def __init__(self, config: BotConfig):
-        self.user_agent = config.reddit_user_agent
+        # Ensure User-Agent is set - Reddit requires a proper User-Agent
+        self.user_agent = config.reddit_user_agent or "rt-cert-program-utils/telegram-reply-bot"
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": self.user_agent})
+        self.session.headers.update({
+            "User-Agent": self.user_agent,
+            "Accept": "application/json",
+        })
 
     @staticmethod
     def _normalize_submission_url(url: str) -> str:
