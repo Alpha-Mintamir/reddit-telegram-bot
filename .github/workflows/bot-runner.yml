@@ -31,8 +31,6 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       GOOGLE_SHEETS_SPREADSHEET_ID: ${{ secrets.GOOGLE_SHEETS_SPREADSHEET_ID }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-      REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
-      REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
       REDDIT_USER_AGENT: ${{ secrets.REDDIT_USER_AGENT }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       BOT_REPLY_MODEL: ${{ secrets.BOT_REPLY_MODEL }}
@@ -71,27 +69,7 @@ jobs:
             echo "dry_flag=" >> $GITHUB_OUTPUT
           fi
 
-      - name: Validate Reddit secrets for run mode
-        id: reddit_guard
-        run: |
-          MODE="${{ steps.vars.outputs.mode }}"
-          if [ "$MODE" = "collect-ids" ]; then
-            echo "can_run=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          if [ -z "${REDDIT_CLIENT_ID}" ] || [ -z "${REDDIT_CLIENT_SECRET}" ] || [ -z "${REDDIT_USER_AGENT}" ]; then
-            echo "can_run=false" >> $GITHUB_OUTPUT
-            echo "Reddit secrets missing. Skipping run for mode=$MODE."
-            exit 0
-          fi
-          echo "can_run=true" >> $GITHUB_OUTPUT
-
       - name: Run bot
-        if: steps.reddit_guard.outputs.can_run == 'true'
         run: python run_bot.py --mode ${{ steps.vars.outputs.mode }} ${{ steps.vars.outputs.dry_flag }}
-
-      - name: Skipped run notice
-        if: steps.reddit_guard.outputs.can_run != 'true'
-        run: echo "Workflow skipped because Reddit secrets are not configured yet."
 
 

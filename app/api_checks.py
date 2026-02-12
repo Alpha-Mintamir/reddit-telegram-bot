@@ -31,9 +31,14 @@ def check_sheets(config: BotConfig) -> Tuple[bool, str]:
 def check_reddit(config: BotConfig) -> Tuple[bool, str]:
     try:
         reddit = RedditClient(config)
-        subreddit = reddit.reddit.subreddit("MachineLearning")
-        _ = next(subreddit.hot(limit=1))
-        return True, "Reddit OK: read access verified on r/MachineLearning"
+        # Test fetching a known post from r/MachineLearning
+        test_url = "https://www.reddit.com/r/MachineLearning/hot.json"
+        response = reddit.session.get(test_url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if data and len(data.get("data", {}).get("children", [])) > 0:
+            return True, "Reddit OK: public JSON scraping verified on r/MachineLearning"
+        return False, "Reddit FAILED: empty response from r/MachineLearning"
     except Exception as exc:
         return False, f"Reddit FAILED: {exc}"
 
@@ -49,7 +54,7 @@ def run_checks(step: str) -> int:
         ok, msg = check_sheets(cfg)
         checks.append(("sheets", ok, msg))
     if step in {"reddit", "all"}:
-        cfg = BotConfig.from_env(require_reddit=True)
+        cfg = BotConfig.from_env(require_reddit=False)
         ok, msg = check_reddit(cfg)
         checks.append(("reddit", ok, msg))
 
@@ -62,5 +67,7 @@ def run_checks(step: str) -> int:
             failures += 1
     print("-" * 40)
     return failures
+
+
 
 

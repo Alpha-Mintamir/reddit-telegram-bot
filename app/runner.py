@@ -328,8 +328,7 @@ def main() -> None:
     parser.add_argument("--mode", choices=["once", "daemon", "collect-ids"], default="once")
     args = parser.parse_args()
 
-    require_reddit = args.mode != "collect-ids"
-    config = BotConfig.from_env(dry_run_override=args.dry_run, require_reddit=require_reddit)
+    config = BotConfig.from_env(dry_run_override=args.dry_run)
     sheets = GoogleSheetsClient(config)
     sheets.ensure_default_schema()
     telegram = TelegramClient(config.telegram_bot_token)

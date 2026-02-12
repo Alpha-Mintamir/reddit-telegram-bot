@@ -61,10 +61,10 @@ Set these in `Settings -> Secrets and variables -> Actions`:
 - `TELEGRAM_BOT_TOKEN`
 - `GOOGLE_SHEETS_SPREADSHEET_ID`
 - `GOOGLE_SERVICE_ACCOUNT_JSON`
-- `REDDIT_CLIENT_ID` (can be empty until approved if you only run `collect-ids`)
-- `REDDIT_CLIENT_SECRET` (same note as above)
-- `REDDIT_USER_AGENT` (same note as above)
+- `REDDIT_USER_AGENT` (optional, defaults to `rt-cert-program-utils/telegram-reply-bot`)
 - `OPENAI_API_KEY`
+
+**Note:** Reddit API credentials are no longer needed. The bot uses Reddit's public JSON endpoints for scraping (read-only access).
 
 ### Optional GitHub Secrets
 

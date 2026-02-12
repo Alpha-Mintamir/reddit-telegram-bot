@@ -21,8 +21,6 @@ def _get_tab_name(env_key: str, default: str) -> str:
 class BotConfig:
     telegram_bot_token: str
     google_spreadsheet_id: str
-    reddit_client_id: str
-    reddit_client_secret: str
     reddit_user_agent: str
     llm_model: str = "gpt-4o-mini"
     timezone: str = "Africa/Addis_Ababa"
@@ -59,12 +57,10 @@ class BotConfig:
     def from_env(
         cls,
         dry_run_override: Optional[bool] = None,
-        require_reddit: bool = True,
+        require_reddit: bool = False,  # No longer required since we use public scraping
     ) -> "BotConfig":
         telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
         google_spreadsheet_id = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip()
-        reddit_client_id = os.getenv("REDDIT_CLIENT_ID", "").strip()
-        reddit_client_secret = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
         reddit_user_agent = os.getenv(
             "REDDIT_USER_AGENT", "rt-cert-program-utils/telegram-reply-bot"
         ).strip()
@@ -73,14 +69,6 @@ class BotConfig:
             ("TELEGRAM_BOT_TOKEN", telegram_bot_token),
             ("GOOGLE_SHEETS_SPREADSHEET_ID", google_spreadsheet_id),
         ]
-        if require_reddit:
-            required.extend(
-                [
-                    ("REDDIT_CLIENT_ID", reddit_client_id),
-                    ("REDDIT_CLIENT_SECRET", reddit_client_secret),
-                    ("REDDIT_USER_AGENT", reddit_user_agent),
-                ]
-            )
         missing = [k for k, v in required if not v]
         if missing:
             raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
@@ -104,8 +92,6 @@ class BotConfig:
         return cls(
             telegram_bot_token=telegram_bot_token,
             google_spreadsheet_id=google_spreadsheet_id,
-            reddit_client_id=reddit_client_id,
-            reddit_client_secret=reddit_client_secret,
             reddit_user_agent=reddit_user_agent,
             llm_model=os.getenv("BOT_REPLY_MODEL", "gpt-4o-mini").strip(),
             timezone=os.getenv("BOT_TIMEZONE", "Africa/Addis_Ababa").strip(),

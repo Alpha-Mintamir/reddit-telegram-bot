@@ -46,3 +46,5 @@ print(f"  Found {len(teams_rows)} rows")
 if teams_rows:
     print(f"  First row: {teams_rows[0]}")
 
+
+
