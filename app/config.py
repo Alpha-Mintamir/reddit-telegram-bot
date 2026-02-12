@@ -1,6 +1,6 @@
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
@@ -34,6 +34,15 @@ class BotConfig:
     teams_tab_name: str = "Teams"
     reply_queue_tab_name: str = "ReplyQueue"
     state_tab_name: str = "State"
+    metrics_tab_name: str = "Metrics"
+
+    # --- Robustness / escalation settings ---
+    # Hours before a sent reply task is considered "timed out"
+    reply_timeout_hours: float = 24.0
+    # Maximum reassignment attempts before escalating to Alpha
+    max_reassign_attempts: int = 2
+    # Alpha's Telegram username (for escalation lookups)
+    alpha_username: str = "alphityy"
 
     @staticmethod
     def _parse_bool(value: Optional[str], default: bool = False) -> bool:
@@ -50,6 +59,18 @@ class BotConfig:
             return default
         try:
             return int(raw)
+        except ValueError:
+            return default
+
+    @staticmethod
+    def _parse_float(value: Optional[str], default: float) -> float:
+        if value is None:
+            return default
+        raw = str(value).strip()
+        if raw == "":
+            return default
+        try:
+            return float(raw)
         except ValueError:
             return default
 
@@ -92,7 +113,7 @@ class BotConfig:
         # Handle timezone - ensure it's not empty
         timezone_raw = os.getenv("BOT_TIMEZONE", "Africa/Addis_Ababa").strip()
         timezone = timezone_raw if timezone_raw else "Africa/Addis_Ababa"
-        
+
         return cls(
             telegram_bot_token=telegram_bot_token,
             google_spreadsheet_id=google_spreadsheet_id,
@@ -111,6 +132,9 @@ class BotConfig:
             teams_tab_name=_get_tab_name("BOT_TEAMS_TAB", "Teams"),
             reply_queue_tab_name=_get_tab_name("BOT_REPLY_QUEUE_TAB", "ReplyQueue"),
             state_tab_name=_get_tab_name("BOT_STATE_TAB", "State"),
+            metrics_tab_name=_get_tab_name("BOT_METRICS_TAB", "Metrics"),
+            # Robustness
+            reply_timeout_hours=cls._parse_float(os.getenv("BOT_REPLY_TIMEOUT_HOURS"), 24.0),
+            max_reassign_attempts=cls._parse_int(os.getenv("BOT_MAX_REASSIGN"), 2),
+            alpha_username=os.getenv("BOT_ALPHA_USERNAME", "alphityy").strip() or "alphityy",
         )
-
-

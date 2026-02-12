@@ -30,9 +30,35 @@ DEFAULT_HEADERS = {
         "comment_url",
         "assigned_member_name",
         "reply_suggestion",
+        "approval_status",
         "status",
         "created_at",
         "sent_at",
+        "approved_at",
+        "reply_posted_at",
+        "reply_url",
+    ],
+    "Metrics": [
+        "metric_id",
+        "post_id",
+        "reddit_post_url",
+        "post_title",
+        "post_created_at",
+        "post_upvotes",
+        "post_comments_count",
+        "comment_id",
+        "comment_author",
+        "comment_created_at",
+        "comment_upvotes",
+        "reply_task_id",
+        "reply_author",
+        "reply_posted_at",
+        "reply_upvotes",
+        "response_time_hours",
+        "assigned_member_name",
+        "team_id",
+        "metric_date",
+        "updated_at",
     ],
     "State": ["state_key", "state_value", "updated_at"],
 }
@@ -75,6 +101,7 @@ class GoogleSheetsClient:
             self.config.posts_tab_name: DEFAULT_HEADERS["PostingPlan"],
             self.config.reply_queue_tab_name: DEFAULT_HEADERS["ReplyQueue"],
             self.config.state_tab_name: DEFAULT_HEADERS["State"],
+            self.config.metrics_tab_name: DEFAULT_HEADERS["Metrics"],
         }
         for tab, headers in mapping.items():
             self.get_or_create_worksheet(tab, headers=headers)
@@ -156,6 +183,65 @@ class GoogleSheetsClient:
 
     def append_reply_task(self, row: Dict[str, str]) -> None:
         self.append_row(self.config.reply_queue_tab_name, row)
+    
+    def append_metric(self, row: Dict[str, str]) -> None:
+        """Append a metric row to the Metrics tab."""
+        self.append_row(self.config.metrics_tab_name, row)
+    
+    def update_reply_task_reply_info(self, task_id: str, reply_url: str, reply_posted_at: str) -> bool:
+        """Update reply task with posted reply information."""
+        ws = self.get_or_create_worksheet(
+            self.config.reply_queue_tab_name,
+            headers=DEFAULT_HEADERS["ReplyQueue"]
+        )
+        headers = ws.row_values(1)
+        if "reply_task_id" not in headers:
+            return False
+        
+        task_col = headers.index("reply_task_id") + 1
+        reply_url_col = headers.index("reply_url") + 1 if "reply_url" in headers else None
+        reply_posted_col = headers.index("reply_posted_at") + 1 if "reply_posted_at" in headers else None
+        
+        all_values = ws.get_all_values()
+        if len(all_values) <= 1:
+            return False
+        
+        for r in range(2, len(all_values) + 1):
+            task_id_value = str(ws.cell(r, task_col).value or "").strip()
+            if task_id_value == task_id:
+                if reply_url_col:
+                    ws.update_cell(r, reply_url_col, reply_url)
+                if reply_posted_col:
+                    ws.update_cell(r, reply_posted_col, reply_posted_at)
+                return True
+        return False
+    
+    def update_reply_task_approval(self, task_id: str, approval_status: str) -> bool:
+        """Update approval status of a reply task."""
+        ws = self.get_or_create_worksheet(
+            self.config.reply_queue_tab_name, 
+            headers=DEFAULT_HEADERS["ReplyQueue"]
+        )
+        headers = ws.row_values(1)
+        if "reply_task_id" not in headers or "approval_status" not in headers:
+            return False
+        
+        task_col = headers.index("reply_task_id") + 1
+        approval_col = headers.index("approval_status") + 1
+        
+        all_values = ws.get_all_values()
+        if len(all_values) <= 1:
+            return False
+        
+        for r in range(2, len(all_values) + 1):
+            task_id_value = str(ws.cell(r, task_col).value or "").strip()
+            if task_id_value == task_id:
+                ws.update_cell(r, approval_col, approval_status)
+                if approval_status == "approved" and "approved_at" in headers:
+                    approved_col = headers.index("approved_at") + 1
+                    ws.update_cell(r, approved_col, self._now_utc_iso())
+                return True
+        return False
 
     def update_team_member_telegram_id(self, member_name: str, telegram_user_id: str) -> bool:
         ws = self.get_or_create_worksheet(self.config.teams_tab_name, headers=DEFAULT_HEADERS["Teams"])
