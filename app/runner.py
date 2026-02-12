@@ -1559,7 +1559,9 @@ def should_run_daily_reminders(last_run_date: str, config: BotConfig) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Telegram Reddit reply bot")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--mode", choices=["once", "daemon", "collect-ids"], default="once")
+    parser.add_argument("--mode", choices=["once", "daemon", "collect-ids", "timed-daemon"], default="once")
+    parser.add_argument("--run-for-minutes", type=int, default=4,
+                        help="For timed-daemon: how many minutes to run before exiting (default 4)")
     args = parser.parse_args()
 
     config = BotConfig.from_env(dry_run_override=args.dry_run)
@@ -1583,7 +1585,40 @@ def main() -> None:
         run_once(ctx)
         return
 
-    # ── Daemon mode ─────────────────────────────────────────────────
+    # ── Timed-daemon mode (ideal for GitHub Actions) ────────────────
+    if args.mode == "timed-daemon":
+        run_minutes = args.run_for_minutes
+        cycle_sleep = 90  # seconds between cycles (1.5 min)
+        deadline = time.time() + (run_minutes * 60)
+        cycle_num = 0
+
+        print(f"Timed-daemon: running for {run_minutes} minute(s), "
+              f"polling every {cycle_sleep}s")
+
+        while time.time() < deadline:
+            cycle_num += 1
+            cycle_start = time.time()
+            print(f"\n--- Cycle {cycle_num} (remaining: "
+                  f"{int(deadline - time.time())}s) ---")
+            try:
+                run_once(ctx)
+            except Exception as exc:
+                logger.error("Timed-daemon cycle %d error: %s", cycle_num, exc)
+                traceback.print_exc()
+
+            elapsed = time.time() - cycle_start
+            remaining = deadline - time.time()
+            sleep_time = min(cycle_sleep, max(remaining, 0))
+            if sleep_time <= 5 or remaining <= 5:
+                break  # Not enough time for another cycle
+            print(f"Cycle {cycle_num} took {elapsed:.1f}s. "
+                  f"Sleeping {sleep_time:.0f}s...")
+            time.sleep(sleep_time)
+
+        print(f"\nTimed-daemon finished after {cycle_num} cycle(s).")
+        return
+
+    # ── Daemon mode (infinite loop, for VPS hosting) ────────────────
     print(f"Daemon mode: poll every {config.poll_interval_minutes} minute(s)")
     last_daily_key = "last_daily_reminder_date"
     consecutive_errors = 0

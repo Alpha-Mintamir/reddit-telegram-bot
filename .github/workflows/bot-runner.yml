@@ -2,8 +2,9 @@ name: Telegram Reddit Bot Runner
 
 on:
   schedule:
-    # Every 10 minutes (UTC)
-    - cron: "*/10 * * * *"
+    # Run every 5 minutes -- GitHub may delay, but the bot runs as a
+    # mini-daemon for up to 4 minutes each time, so coverage is good.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -14,6 +15,7 @@ on:
         options:
           - once
           - collect-ids
+          - timed-daemon
       dry_run:
         description: "Run without sending or writing"
         required: true
@@ -23,7 +25,7 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
     concurrency:
       group: telegram-reddit-bot-runner
       cancel-in-progress: false
@@ -42,6 +44,11 @@ jobs:
       BOT_POSTING_TAB: ${{ secrets.BOT_POSTING_TAB }}
       BOT_REPLY_QUEUE_TAB: ${{ secrets.BOT_REPLY_QUEUE_TAB }}
       BOT_STATE_TAB: ${{ secrets.BOT_STATE_TAB }}
+      BOT_METRICS_TAB: ${{ secrets.BOT_METRICS_TAB }}
+      BOT_TEST_POSTS_TAB: ${{ secrets.BOT_TEST_POSTS_TAB }}
+      BOT_REPLY_TIMEOUT_HOURS: ${{ secrets.BOT_REPLY_TIMEOUT_HOURS }}
+      BOT_MAX_REASSIGN: ${{ secrets.BOT_MAX_REASSIGN }}
+      BOT_ALPHA_USERNAME: ${{ secrets.BOT_ALPHA_USERNAME }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -65,11 +72,11 @@ jobs:
               echo "dry_flag=" >> $GITHUB_OUTPUT
             fi
           else
-            echo "mode=once" >> $GITHUB_OUTPUT
+            # Scheduled runs use timed-daemon: runs multiple cycles
+            # within a single job for faster response times
+            echo "mode=timed-daemon" >> $GITHUB_OUTPUT
             echo "dry_flag=" >> $GITHUB_OUTPUT
           fi
 
       - name: Run bot
         run: python run_bot.py --mode ${{ steps.vars.outputs.mode }} ${{ steps.vars.outputs.dry_flag }}
-
-
